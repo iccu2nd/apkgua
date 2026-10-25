@@ -1,33 +1,57 @@
 package com.komikta.app
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.navigation.NavType
 import androidx.navigation.compose.*
+import androidx.navigation.navArgument
+import coil.compose.AsyncImage
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.komikta.app.data.remote.ApiEnvelope
+import com.komikta.app.data.remote.KomiktaApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-private val Ink = Color(0xFF000000)
-private val Muted = Color(0xFF9A9A9F)
-private val Paper = Color(0xFF000000)
-private val Line = Color(0xFF2C2C2E)
-private val White = Color(0xFFE8E8EA)
-private val Panel = Color(0xFF1C1C1E)
-private val Accent = Color(0xFFA0A0A5)
+private val Ink = Color(0xFF080809)
+private val Panel = Color(0xFF171719)
+private val Panel2 = Color(0xFF202023)
+private val Line = Color(0xFF303034)
+private val White = Color(0xFFF2F2F4)
+private val Muted = Color(0xFFA1A1A8)
+private val Accent = Color(0xFFB5B5BC)
+private val Gold = Color(0xFFD8B778)
+private val api: KomiktaApi by lazy { KomiktaApi.create(BuildConfig.API_BASE_URL) }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,231 +60,399 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun JsonElement?.str(vararg keys: String): String {
+    if (this == null || !isJsonObject) return ""
+    for (key in keys) {
+        val v = asJsonObject.get(key) ?: continue
+        if (!v.isJsonNull && v.isJsonPrimitive) return v.asString
+    }
+    return ""
+}
+private fun JsonElement?.arr(vararg keys: String): List<JsonElement> {
+    if (this == null || !isJsonObject) return emptyList()
+    for (key in keys) {
+        val v = asJsonObject.get(key)
+        if (v != null && v.isJsonArray) return v.asJsonArray.toList()
+    }
+    return emptyList()
+}
+private fun JsonElement?.textArray(vararg keys: String): List<String> {
+    if (this == null || !isJsonObject) return emptyList()
+    for (key in keys) {
+        val v = asJsonObject.get(key) ?: continue
+        if (v.isJsonArray) return v.asJsonArray.mapNotNull { if (it.isJsonPrimitive) it.asString else null }
+    }
+    return emptyList()
+}
+private fun JsonElement?.obj(): JsonObject? = if (this != null && isJsonObject) asJsonObject else null
+private fun JsonElement?.cover(): String = str("poster", "cover", "thumbnail", "image")
+private fun JsonElement?.url(): String = str("url", "link", "slug")
+private fun JsonElement?.title(): String = str("title", "name")
+private fun imageUrl(source: String): String {
+    if (source.isBlank()) return ""
+    val normalized = if (source.startsWith("//")) "https:$source" else source
+    // Gunakan proxy backend agar sumber gambar yang memerlukan Referer tetap bisa dimuat.
+    return if (normalized.startsWith("https://") && !normalized.startsWith(BuildConfig.API_BASE_URL)) {
+        BuildConfig.API_BASE_URL + "api/img?url=" + Uri.encode(normalized)
+    } else normalized
+}
+
 @Composable
 private fun KomiktaApp() {
     val nav = rememberNavController()
-    val current by nav.currentBackStackEntryAsState()
-    val route = current?.destination?.route ?: "home"
-    val tabs = listOf("home", "explore", "library", "profile")
-    val labels = listOf("Home", "Explore", "Library", "Profile")
-    val icons = listOf(Icons.Default.Home, Icons.Default.Search, Icons.Default.BookmarkBorder, Icons.Default.PersonOutline)
-
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Accent, onPrimary = Ink, background = Paper, surface = Panel,
-            onSurface = White, secondary = Muted
-        )
-    ) {
+    val entry by nav.currentBackStackEntryAsState()
+    val route = entry?.destination?.route.orEmpty()
+    val context = LocalContext.current
+    val saved = remember {
+        mutableStateListOf<String>().apply {
+            addAll(context.getSharedPreferences("komikta_local", android.content.Context.MODE_PRIVATE).getStringSet("saved_comics", emptySet()) ?: emptySet())
+        }
+    }
+    LaunchedEffect(saved.toList()) {
+        context.getSharedPreferences("komikta_local", android.content.Context.MODE_PRIVATE)
+            .edit().putStringSet("saved_comics", saved.toSet()).apply()
+    }
+    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Ink, background = Ink, surface = Panel, onSurface = White, secondary = Muted)) {
         Scaffold(
-            containerColor = Paper,
+            containerColor = Ink,
             bottomBar = {
-                NavigationBar(containerColor = Color(0xE61C1C1E), tonalElevation = 0.dp) {
-                    tabs.forEachIndexed { index, tab ->
-                        NavigationBarItem(
-                            selected = route == tab,
-                            onClick = {
-                                nav.navigate(tab) {
-                                    popUpTo("home") { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Icon(icons[index], contentDescription = labels[index]) },
-                            label = { Text(labels[index]) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = Ink, selectedTextColor = Ink,
-                                indicatorColor = Color(0xFF3A3A3C),
-                                unselectedIconColor = Muted, unselectedTextColor = Muted
-                            )
-                        )
+                if (route in listOf("home", "explore", "library", "profile")) {
+                    NavigationBar(containerColor = Color(0xF2171719), tonalElevation = 0.dp, modifier = Modifier.height(68.dp)) {
+                        val tabs = listOf(Triple("home", "Home", Icons.Default.Home), Triple("explore", "Explore", Icons.Default.Search), Triple("library", "Library", Icons.Default.BookmarkBorder), Triple("profile", "Profile", Icons.Default.PersonOutline))
+                        tabs.forEach { (key, label, icon) ->
+                            NavigationBarItem(selected = route == key, onClick = { nav.navigate(key) { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
+                                icon = { Icon(icon, null, modifier = Modifier.size(21.dp)) }, label = { Text(label, fontSize = 10.sp, fontWeight = if (route == key) FontWeight.SemiBold else FontWeight.Normal) },
+                                colors = NavigationBarItemDefaults.colors(selectedIconColor = White, selectedTextColor = White, indicatorColor = Color(0xFF343438), unselectedIconColor = Muted, unselectedTextColor = Muted))
+                        }
                     }
                 }
             }
         ) { padding ->
             NavHost(navController = nav, startDestination = "home", modifier = Modifier.padding(padding)) {
-                composable("home") { HomeScreen(onExplore = { nav.navigate("explore") }) }
-                composable("explore") { ExploreScreen() }
-                composable("library") { LibraryScreen() }
+                composable("home") { HomeScreen(onExplore = { nav.navigate("explore") }, onOpen = { nav.navigate("detail/${Uri.encode(it)}") }, saved = saved) }
+                composable("explore") { ExploreScreen(onOpen = { nav.navigate("detail/${Uri.encode(it)}") }) }
+                composable("library") { LibraryScreen(saved = saved, onOpen = { nav.navigate("detail/${Uri.encode(it)}") }, onExplore = { nav.navigate("explore") }) }
                 composable("profile") { ProfileScreen() }
+                composable("detail/{sourceUrl}", arguments = listOf(navArgument("sourceUrl") { type = NavType.StringType })) { back ->
+                    DetailScreen(sourceUrl = Uri.decode(back.arguments?.getString("sourceUrl").orEmpty()), saved = saved,
+                        onBack = { nav.popBackStack() }, onRead = { nav.navigate("reader/${Uri.encode(it)}") })
+                }
+                composable("reader/{chapterUrl}", arguments = listOf(navArgument("chapterUrl") { type = NavType.StringType })) { back ->
+                    ReaderScreen(chapterUrl = Uri.decode(back.arguments?.getString("chapterUrl").orEmpty()), onBack = { nav.popBackStack() })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun HomeScreen(onExplore: () -> Unit) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(22.dp)
-    ) {
+private fun AppHeader(subtitle: String? = null, onSearch: (() -> Unit)? = null) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("KOMIK", color = White, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-.8).sp)
+                Text("TA", color = Accent, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-.8).sp)
+            }
+            if (subtitle != null) Text(subtitle, color = Muted, fontSize = 12.sp)
+        }
+        if (onSearch != null) Surface(shape = CircleShape, color = Panel2, modifier = Modifier.size(42.dp).clickable { onSearch() }) {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Search, "Cari komik", tint = White) }
+        }
+    }
+}
+
+@Composable
+private fun HomeScreen(onExplore: () -> Unit, onOpen: (String) -> Unit, saved: List<String>) {
+    var feed by remember { mutableStateOf<List<JsonElement>>(emptyList()) }
+    var updates by remember { mutableStateOf<List<JsonElement>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        try {
+            val pair = withContext(Dispatchers.IO) { api.home() to runCatching { api.updates() }.getOrNull() }
+            feed = pair.first.data?.let { if (it.isJsonArray) it.asJsonArray.toList() else it.arr("items", "data") }.orEmpty()
+            updates = pair.second?.data?.let { if (it.isJsonArray) it.asJsonArray.toList() else it.arr("items", "data") }.orEmpty()
+            if (feed.isEmpty() && updates.isEmpty()) error = "Belum ada data yang dapat ditampilkan. Periksa koneksi atau alamat backend."
+        } catch (e: Exception) { error = e.message ?: "Gagal menghubungkan ke server Komikta." }
+        loading = false
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 26.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+        item { AppHeader("Baca cerita, temukan dunia.", onExplore) }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("KOMIKTA", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.ExtraBold, color = White)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Baca cerita, temukan dunia.", style = MaterialTheme.typography.bodyMedium, color = Muted)
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Brush.linearGradient(listOf(Color(0xFF303034), Color(0xFF171719), Color(0xFF242329)))).padding(22.dp)) {
+                Column {
+                    Surface(color = Color(0x2FFFFFFF), shape = RoundedCornerShape(8.dp)) { Text("  DISCOVER YOUR NEXT STORY  ", color = White, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.padding(vertical = 7.dp)) }
+                    Spacer(Modifier.height(16.dp))
+                    Text("Satu chapter lagi.\nSatu dunia baru.", color = White, fontSize = 27.sp, lineHeight = 33.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.7).sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Temukan manga, manhwa, dan manhua pilihanmu.", color = Color(0xFFC4C4CA), fontSize = 13.sp, lineHeight = 19.sp)
+                    Spacer(Modifier.height(18.dp))
+                    Button(onClick = onExplore, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = White, contentColor = Ink), contentPadding = PaddingValues(horizontal = 17.dp, vertical = 12.dp)) {
+                        Text("Jelajahi koleksi", fontWeight = FontWeight.SemiBold); Spacer(Modifier.width(8.dp)); Icon(Icons.Default.ArrowForward, null, modifier = Modifier.size(16.dp))
+                    }
                 }
-                IconButton(onClick = onExplore) {
-                    Icon(Icons.Default.Search, contentDescription = "Cari komik", tint = Ink)
-                }
+                Icon(Icons.Default.AutoStories, null, tint = Color(0x22FFFFFF), modifier = Modifier.align(Alignment.BottomEnd).size(112.dp))
             }
         }
-        item {
-            Column(
-                Modifier.fillMaxWidth()
-                    .background(Panel, RoundedCornerShape(22.dp))
-                    .padding(20.dp)
-            ) {
-                Text("PILIHAN HARI INI", color = Color(0xFF9A9A9F), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(12.dp))
-                Text("Mulai petualangan\nbacamu berikutnya.", color = White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                Text("Jelajahi ribuan chapter dari cerita favoritmu.", color = Color(0xFFB5B5BA), style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(18.dp))
-                Button(onClick = onExplore, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8E8EA), contentColor = Ink)) {
-                    Text("Jelajahi komik")
-                    Spacer(Modifier.width(8.dp))
-                    Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(16.dp))
-                }
+        if (loading) item { LoadingBlock() }
+        if (error.isNotBlank() && !loading) item { ErrorPanel(error, onExplore) }
+        if (feed.isNotEmpty()) {
+            item { SectionHeading("Pilihan untukmu", "Lihat semua", onExplore) }
+            item { LazyRow(horizontalArrangement = Arrangement.spacedBy(13.dp)) { items(feed.take(10)) { item -> PosterCard(item, onClick = { item.url().takeIf(String::isNotBlank)?.let(onOpen) }, width = 132.dp) } } }
+        }
+        if (updates.isNotEmpty()) {
+            item { SectionHeading("Update terbaru", "Eksplorasi", onExplore) }
+            items(updates.take(12)) { item -> CompactComicRow(item, onClick = { item.url().takeIf(String::isNotBlank)?.let(onOpen) }) }
+        }
+        if (feed.isNotEmpty() && updates.isEmpty()) {
+            item { SectionHeading("Sedang populer", "Lihat semua", onExplore) }
+            items(feed.drop(10).take(8)) { item -> CompactComicRow(item) { item.url().takeIf(String::isNotBlank)?.let(onOpen) } }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeading(title: String, action: String, onAction: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), color = White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-.3).sp)
+        Text(action, color = Muted, fontSize = 11.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { onAction() }.padding(6.dp))
+    }
+}
+
+@Composable
+private fun PosterCard(item: JsonElement, onClick: () -> Unit, width: androidx.compose.ui.unit.Dp = 128.dp) {
+    Column(Modifier.then(if (width == androidx.compose.ui.unit.Dp.Unspecified) Modifier.fillMaxWidth() else Modifier.width(width)).clickable { onClick() }) {
+        Box(Modifier.fillMaxWidth().height(178.dp).clip(RoundedCornerShape(13.dp)).background(Panel2)) {
+            val cover = imageUrl(item.cover())
+            if (cover.isNotBlank()) AsyncImage(model = cover, contentDescription = item.title(), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.AutoStories, null, tint = Muted, modifier = Modifier.size(36.dp)) }
+            val badge = item.str("status", "type", "format")
+            if (badge.isNotBlank()) Surface(color = Color(0xD9000000), shape = RoundedCornerShape(bottomEnd = 9.dp), modifier = Modifier.align(Alignment.TopStart)) { Text(badge.uppercase().take(12), color = White, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp), maxLines = 1) }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(item.title().ifBlank { "Tanpa judul" }, color = White, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val chapter = item.str("chapter", "latest_chapter", "latestChapter")
+        if (chapter.isNotBlank()) Text(chapter, color = Muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun CompactComicRow(item: JsonElement, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Panel).clickable { onClick() }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        AsyncImage(model = imageUrl(item.cover()), contentDescription = item.title(), modifier = Modifier.size(66.dp, 84.dp).clip(RoundedCornerShape(9.dp)).background(Panel2), contentScale = ContentScale.Crop)
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(item.title().ifBlank { "Tanpa judul" }, color = White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(item.str("chapter", "latest_chapter", "latestChapter").ifBlank { item.str("genres", "format", "type").ifBlank { "Komik terbaru" } }, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val meta = item.str("updated", "time", "latest_chapter_time", "status")
+            if (meta.isNotBlank()) Text(meta, color = Color(0xFF85858B), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.Default.ChevronRight, null, tint = Muted)
+    }
+}
+
+@Composable
+private fun ExploreScreen(onOpen: (String) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    var genre by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf("latest") }
+    var items by remember { mutableStateOf<List<JsonElement>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    fun load() { scope.launch {
+        loading = true; error = ""
+        try {
+            val result = withContext(Dispatchers.IO) { api.explore(query = query.trim(), genre = genre, sort = sort, page = 1, size = 60) }
+            items = result.data?.items ?: emptyList()
+            if (items.isEmpty()) error = "Tidak ada komik yang cocok. Coba kata kunci lain."
+        } catch (e: Exception) { error = e.message ?: "Tidak dapat memuat katalog." }
+        loading = false
+    } }
+    LaunchedEffect(Unit) { load() }
+    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp).padding(top = 18.dp)) {
+        AppHeader("Temukan bacaan berikutnya")
+        Spacer(Modifier.height(20.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Panel).padding(horizontal = 13.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Search, null, tint = Muted)
+            Spacer(Modifier.width(9.dp))
+            BasicTextField(value = query, onValueChange = { query = it }, modifier = Modifier.weight(1f).padding(vertical = 14.dp), singleLine = true, textStyle = androidx.compose.ui.text.TextStyle(color = White, fontSize = 13.sp), decorationBox = { inner -> if (query.isEmpty()) Text("Cari judul komik...", color = Muted, fontSize = 13.sp); inner() })
+            if (query.isNotEmpty()) Icon(Icons.Default.Close, "Hapus", tint = Muted, modifier = Modifier.clickable { query = "" })
+            IconButton(onClick = { load() }) { Icon(Icons.Default.ArrowForward, "Cari", tint = White) }
+        }
+        Spacer(Modifier.height(13.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            items(listOf("Semua", "Action", "Adventure", "Fantasy", "Romance", "Drama", "Comedy")) { label ->
+                val value = if (label == "Semua") "" else label
+                FilterChip(selected = genre.equals(value, true), onClick = { genre = value; load() }, label = { Text(label, fontSize = 11.sp) }, shape = RoundedCornerShape(10.dp), colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(0xFF343438), selectedLabelColor = White, labelColor = Muted))
             }
         }
-        item { SectionHeader("Lanjutkan membaca", "Riwayat bacaan") }
-        item {
-            StoryRow("The Beginning After the End", "Chapter terakhir dibaca · Chapter 12", "12", "TBATE")
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Katalog komik", Modifier.weight(1f), color = White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = { sort = if (sort == "latest") "popular" else "latest"; load() }) { Icon(Icons.Default.SwapVert, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text(if (sort == "latest") "Terbaru" else "Populer", color = Muted, fontSize = 11.sp) }
         }
-        item { SectionHeader("Update terbaru", "Lihat semua") }
-        items(listOf(
-            Story("Solo Leveling", "Chapter 200 · 2 jam lalu", "SL"),
-            Story("Omniscient Reader", "Chapter 188 · 5 jam lalu", "OR"),
-            Story("The Beginning After the End", "Chapter 12 · kemarin", "TB")
-        )) { story -> StoryRow(story.title, story.subtitle, story.badge, story.title.take(2).uppercase()) }
-        item { SectionHeader("Temukan cerita", "Eksplorasi") }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Action", "Fantasy", "Romance", "Comedy").forEach {
-                    Surface(color = Panel, shape = RoundedCornerShape(50), modifier = Modifier.clickable(onClick = onExplore)) {
-                        Text(it, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = Ink, style = MaterialTheme.typography.labelMedium)
+        when {
+            loading && items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
+            error.isNotBlank() && items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyState(error, Icons.Default.Search, "Coba lagi") { load() } }
+            else -> LazyVerticalGrid(columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 5.dp, bottom = 20.dp), horizontalArrangement = Arrangement.spacedBy(11.dp), verticalArrangement = Arrangement.spacedBy(17.dp)) {
+                items(items) { item -> PosterCard(item, onClick = { item.url().takeIf(String::isNotBlank)?.let(onOpen) }, width = androidx.compose.ui.unit.Dp.Unspecified) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailScreen(sourceUrl: String, saved: MutableList<String>, onBack: () -> Unit, onRead: (String) -> Unit) {
+    var data by remember(sourceUrl) { mutableStateOf<JsonElement?>(null) }
+    var loading by remember(sourceUrl) { mutableStateOf(true) }
+    var error by remember(sourceUrl) { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(sourceUrl) {
+        try { val res = withContext(Dispatchers.IO) { api.detail(sourceUrl) }; data = res.data; if (data == null) error = res.message ?: "Detail komik tidak ditemukan." }
+        catch (e: Exception) { error = e.message ?: "Gagal memuat detail komik." }
+        loading = false
+    }
+    val d = data
+    if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
+    else if (d == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyState(error, Icons.Default.CloudOff, "Kembali") { onBack() } }
+    else {
+        val chapters = d.arr("chapters", "chapter_list", "chapterList")
+        val title = d.title().ifBlank { "Detail komik" }
+        val cover = imageUrl(d.cover())
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item {
+                Box(Modifier.fillMaxWidth().height(310.dp).background(Panel)) {
+                    if (cover.isNotBlank()) AsyncImage(model = cover, contentDescription = title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = .48f)
+                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x22000000), Ink))))
+                    IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(10.dp).background(Color(0x88000000), CircleShape)) { Icon(Icons.Default.ArrowBack, "Kembali", tint = White) }
+                    Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 20.dp, vertical = 17.dp), verticalAlignment = Alignment.Bottom) {
+                        AsyncImage(model = cover, contentDescription = title, modifier = Modifier.size(118.dp, 160.dp).clip(RoundedCornerShape(13.dp)).background(Panel2), contentScale = ContentScale.Crop)
+                        Spacer(Modifier.width(15.dp))
+                        Column(Modifier.weight(1f).padding(bottom = 3.dp)) {
+                            Text(d.str("status", "type", "format").ifBlank { "KOMIKTA PICK" }.uppercase(), color = Gold, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                            Spacer(Modifier.height(7.dp)); Text(title, color = White, fontSize = 20.sp, lineHeight = 25.sp, fontWeight = FontWeight.Bold, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height(7.dp)); Text(d.str("author", "authors").ifBlank { "Penulis tidak diketahui" }, color = Muted, fontSize = 11.sp, maxLines = 2)
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-private data class Story(val title: String, val subtitle: String, val badge: String)
-
-@Composable
-private fun SectionHeader(title: String, action: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
-        Text(action, style = MaterialTheme.typography.labelMedium, color = Muted)
-    }
-}
-
-@Composable
-private fun StoryRow(title: String, subtitle: String, badge: String, initials: String) {
-    Row(
-        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier.size(width = 58.dp, height = 76.dp).background(Color(0xFF2C2C2E), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(initials.take(3), color = Ink, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(5.dp))
-            Text(subtitle, color = Muted, style = MaterialTheme.typography.bodySmall, maxLines = 2)
-        }
-        Spacer(Modifier.width(8.dp))
-        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Muted)
-    }
-}
-
-@Composable
-private fun ExploreScreen() {
-    var query by remember { mutableStateOf("") }
-    val genres = listOf("All", "Action", "Fantasy", "Romance", "Drama")
-    var selected by remember { mutableStateOf("All") }
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 22.dp)) {
-        Text("Explore", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Ink)
-        Spacer(Modifier.height(6.dp))
-        Text("Cari cerita yang cocok untukmu.", color = Muted)
-        Spacer(Modifier.height(18.dp))
-        OutlinedTextField(
-            value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Cari judul komik…") }, leadingIcon = { Icon(Icons.Default.Search, null) },
-            singleLine = true, shape = RoundedCornerShape(16.dp)
-        )
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            genres.forEach { genre ->
-                FilterChip(selected = selected == genre, onClick = { selected = genre }, label = { Text(genre) })
+            item {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = { chapters.firstOrNull()?.str("url", "link")?.takeIf(String::isNotBlank)?.let(onRead) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = White, contentColor = Ink)) { Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Mulai membaca") }
+                    OutlinedButton(onClick = { if (saved.contains(sourceUrl)) saved.remove(sourceUrl) else saved.add(sourceUrl) }, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = White)) { Icon(if (saved.contains(sourceUrl)) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, null); Spacer(Modifier.width(5.dp)); Text(if (saved.contains(sourceUrl)) "Tersimpan" else "Simpan") }
+                }
             }
-        }
-        Spacer(Modifier.height(18.dp))
-        Text("Populer sekarang", fontWeight = FontWeight.Bold, color = Ink, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(10.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(listOf(Story("Solo Leveling", "Action · Fantasy", "SL"), Story("Omniscient Reader", "Action · Drama", "OR"), Story("The Beginning After the End", "Fantasy · Adventure", "TB"))) { s ->
-                StoryRow(s.title, s.subtitle, s.badge, s.badge)
+            item {
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        MetaPill(d.str("status").ifBlank { "Ongoing" }); MetaPill(d.str("format", "type").ifBlank { "Komik" });
+                        val rating = d.str("user_rate", "rating", "rate"); if (rating.isNotBlank()) MetaPill("★ $rating", Gold)
+                    }
+                    Spacer(Modifier.height(17.dp)); Text("Sinopsis", color = White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(7.dp)); Text(d.str("description", "synopsis").ifBlank { "Belum ada sinopsis untuk komik ini." }, color = Color(0xFFC2C2C8), fontSize = 13.sp, lineHeight = 20.sp)
+                    val genres = d.textArray("genres", "genre")
+                    if (genres.isNotEmpty()) { Spacer(Modifier.height(13.dp)); LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) { items(genres) { MetaPill(it) } } }
+                }
+            }
+            item { Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 25.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { Text("Daftar chapter", Modifier.weight(1f), color = White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Text("${chapters.size} chapter", color = Muted, fontSize = 11.sp) } }
+            if (chapters.isEmpty()) item { Text("Daftar chapter tidak tersedia.", Modifier.padding(20.dp), color = Muted, fontSize = 12.sp) }
+            items(chapters) { chapter ->
+                Row(Modifier.fillMaxWidth().clickable { chapter.str("url", "link").takeIf(String::isNotBlank)?.let(onRead) }.padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(Panel2), contentAlignment = Alignment.Center) { Icon(Icons.Default.MenuBook, null, tint = Muted, modifier = Modifier.size(18.dp)) }
+                    Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(chapter.str("title", "name").ifBlank { "Chapter" }, color = White, fontSize = 13.sp, fontWeight = FontWeight.Medium); Text(chapter.str("time", "updated_at", "date"), color = Muted, fontSize = 10.sp) }
+                    Icon(Icons.Default.ChevronRight, null, tint = Muted)
+                }
+                HorizontalDivider(color = Line.copy(alpha = .55f), modifier = Modifier.padding(start = 70.dp))
             }
         }
     }
 }
 
 @Composable
-private fun LibraryScreen() {
-    Column(Modifier.fillMaxSize().padding(22.dp)) {
-        Text("Library", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Ink)
-        Spacer(Modifier.height(6.dp))
-        Text("Koleksi dan riwayat bacaanmu.", color = Muted)
-        Spacer(Modifier.height(22.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = true, onClick = {}, label = { Text("Tersimpan") })
-            FilterChip(selected = false, onClick = {}, label = { Text("Riwayat") })
-            FilterChip(selected = false, onClick = {}, label = { Text("Download") })
+private fun ReaderScreen(chapterUrl: String, onBack: () -> Unit) {
+    var data by remember(chapterUrl) { mutableStateOf<JsonElement?>(null) }
+    var loading by remember(chapterUrl) { mutableStateOf(true) }
+    var error by remember(chapterUrl) { mutableStateOf("") }
+    LaunchedEffect(chapterUrl) {
+        try { data = withContext(Dispatchers.IO) { api.chapter(chapterUrl) }.data; if (data == null) error = "Chapter tidak ditemukan." }
+        catch (e: Exception) { error = e.message ?: "Gagal memuat chapter." }
+        loading = false
+    }
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 8.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Kembali", tint = White) }
+            Column(Modifier.weight(1f)) { Text(data.title().ifBlank { "Pembaca Komik" }, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("Mode baca vertikal", color = Muted, fontSize = 10.sp) }
         }
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
+            data == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyState(error, Icons.Default.CloudOff, "Kembali") { onBack() } }
+            else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                val pages = data.arr("images", "pages", "image_urls")
+                if (pages.isEmpty()) item { Text("Halaman chapter tidak tersedia.", Modifier.padding(24.dp), color = Muted) }
+                items(pages) { page ->
+                    val src = if (page.isJsonPrimitive) page.asString else page.str("url", "src", "image")
+                    AsyncImage(model = imageUrl(src), contentDescription = "Halaman komik", modifier = Modifier.fillMaxWidth().background(Color.Black), contentScale = ContentScale.FillWidth)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetaPill(text: String, color: Color = Muted) { Surface(color = Panel2, shape = RoundedCornerShape(8.dp)) { Text(text.ifBlank { "Info" }, color = color, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp), maxLines = 1) } }
+
+@Composable
+private fun LibraryScreen(saved: List<String>, onOpen: (String) -> Unit, onExplore: () -> Unit) {
+    var tab by remember { mutableStateOf("Tersimpan") }
+    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp).padding(top = 20.dp)) {
+        Text("Library", color = White, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.7).sp)
+        Spacer(Modifier.height(5.dp)); Text("Semua bacaanmu, tersusun rapi.", color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(19.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Tersimpan", "Riwayat").forEach { FilterChip(selected = tab == it, onClick = { tab = it }, label = { Text(it) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Panel2, selectedLabelColor = White, labelColor = Muted)) } }
         Spacer(Modifier.height(20.dp))
-        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.BookmarkBorder, contentDescription = null, tint = Muted, modifier = Modifier.size(42.dp))
-                Spacer(Modifier.height(12.dp))
-                Text("Belum ada komik tersimpan", color = Ink, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(5.dp))
-                Text("Komik yang kamu simpan akan muncul di sini.", color = Muted, style = MaterialTheme.typography.bodySmall)
-            }
-        }
+        if (saved.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyState(if (tab == "Tersimpan") "Komik yang kamu simpan akan muncul di sini." else "Riwayat bacaan akan tersedia setelah kamu mulai membaca.", Icons.Default.BookmarkBorder, "Jelajahi komik", onExplore) }
+        else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(saved) { url -> Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Panel).clickable { onOpen(url) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Bookmark, null, tint = Accent); Spacer(Modifier.width(12.dp)); Text(url.substringAfterLast('/').take(40), color = White, modifier = Modifier.weight(1f), maxLines = 1); Icon(Icons.Default.ChevronRight, null, tint = Muted) } } }
     }
 }
 
 @Composable
 private fun ProfileScreen() {
-    Column(Modifier.fillMaxSize().padding(22.dp)) {
-        Text("Profile", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Ink)
-        Spacer(Modifier.height(6.dp))
-        Text("Atur pengalaman membaca Komikta.", color = Muted)
-        Spacer(Modifier.height(24.dp))
-        ProfileItem(Icons.Default.Tune, "Pengaturan reader", "Mode baca, arah, dan preferensi")
-        ProfileItem(Icons.Default.Download, "Download", "Kelola chapter offline")
-        ProfileItem(Icons.Default.Info, "Tentang Komikta", "Versi aplikasi dan informasi")
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Text("Profil", color = White, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.7).sp)
+        Spacer(Modifier.height(5.dp)); Text("Atur pengalaman membaca Komikta.", color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(22.dp))
+        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Brush.linearGradient(listOf(Panel2, Panel))).padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(52.dp).clip(CircleShape).background(Color(0xFF343438)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Person, null, tint = White, modifier = Modifier.size(28.dp)) }; Spacer(Modifier.width(14.dp)); Column { Text("Pembaca Komikta", color = White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp); Text("Baca lebih banyak, temukan cerita baru.", color = Muted, fontSize = 11.sp) } }
+        }
+        Spacer(Modifier.height(20.dp))
+        ProfileItem(Icons.Default.Tune, "Pengaturan reader", "Preferensi membaca dan tampilan")
+        ProfileItem(Icons.Default.Download, "Download offline", "Unduhan akan tersedia pada versi berikutnya")
+        ProfileItem(Icons.Default.Info, "Tentang Komikta", "Versi aplikasi 1.0.0")
+        Spacer(Modifier.height(18.dp)); Text("KOMIKTA  ·  BACA CERITA, TEMUKAN DUNIA", color = Color(0xFF66666D), fontSize = 9.sp, letterSpacing = 1.sp)
     }
 }
 
 @Composable
 private fun ProfileItem(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).background(Panel, RoundedCornerShape(16.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = Ink)
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, color = Ink, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(3.dp))
-            Text(subtitle, color = Muted, style = MaterialTheme.typography.bodySmall)
-        }
-        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Muted)
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(15.dp)).background(Panel).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Panel2), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Accent, modifier = Modifier.size(19.dp)) }
+        Spacer(Modifier.width(13.dp)); Column(Modifier.weight(1f)) { Text(title, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(3.dp)); Text(subtitle, color = Muted, fontSize = 10.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted)
+    }
+}
+
+@Composable
+private fun LoadingBlock() { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { repeat(3) { Box(Modifier.fillMaxWidth().height(76.dp).clip(RoundedCornerShape(14.dp)).background(Panel)) } } }
+
+@Composable
+private fun ErrorPanel(message: String, onRetry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).padding(18.dp)) { Icon(Icons.Default.CloudOff, null, tint = Muted); Spacer(Modifier.height(9.dp)); Text("Katalog belum tersedia", color = White, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(5.dp)); Text(message, color = Muted, fontSize = 12.sp); Spacer(Modifier.height(10.dp)); Text("Coba jelajahi", color = White, fontSize = 12.sp, modifier = Modifier.clickable { onRetry() }) }
+}
+
+@Composable
+private fun EmptyState(message: String, icon: androidx.compose.ui.graphics.vector.ImageVector, action: String, onAction: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(66.dp).clip(RoundedCornerShape(20.dp)).background(Panel), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Muted, modifier = Modifier.size(29.dp)) }
+        Spacer(Modifier.height(15.dp)); Text(message, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+        Spacer(Modifier.height(13.dp)); Text(action, color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Panel2).clickable { onAction() }.padding(horizontal = 15.dp, vertical = 10.dp))
     }
 }

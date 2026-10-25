@@ -1,12 +1,35 @@
-# Komikta Android Native — Migration Base
+# Komikta Android Native (Kotlin + Jetpack Compose)
 
-Native Android application scaffold using Kotlin, Jetpack Compose, Material 3, Navigation Compose, Retrofit, Coroutines and Coil.
+Native Android client for the existing Komikta Node.js/Express API. This is not a WebView wrapper.
 
-## Open
-Open this folder in Android Studio (recent stable), allow Gradle sync, then run the `app` configuration.
+## Included
+- Native Compose UI with dark visual language aligned with the website's current design tokens.
+- Home feed and latest updates from `/api/home` and `/api/update`.
+- Search, genre filters, latest/popular sorting and catalog grid from `/api/explore`.
+- Comic detail, synopsis, genres, chapter list and vertical chapter reader.
+- Persistent local saved list, native bottom navigation, loading/error/empty states.
+- Coil image loading, Retrofit + Gson, coroutine-based requests.
 
-## Backend
-The existing Komikta Node/Express backend remains separate and should be deployed unchanged. Configure the production API base URL in the Android networking module before connecting real data.
+## Configure backend URL
 
-## Current state
-This is the first native migration foundation: app module, native navigation shell, theme baseline, and four primary destinations. The original web project contains full catalog/detail/chapter/reader/offline behaviors that still need to be ported screen-by-screen and verified against the live backend. This scaffold does not claim feature parity yet.
+The app uses a **placeholder default** (the website README lists this domain as an example, not a confirmed deployment). You can override it with a Gradle property:
+
+```properties
+KOMIKTA_API_BASE_URL=https://your-real-backend-domain.example/
+```
+
+Put that property in your local `gradle.properties` (do not commit private values), or pass `-PKOMIKTA_API_BASE_URL=https://your-real-backend-domain.example/` to Gradle. Keep the trailing slash.
+
+Replace it with the actual deployed HTTPS URL for the Node/Express backend, keeping the trailing slash. The website ZIP's README mentions `komikta.vercel.app` only as an example; verify that this is really where your backend is deployed before building.
+
+Expected endpoints: `/api/home`, `/api/update`, `/api/explore`, `/api/detail?url=...`, `/api/read?url=...`.
+
+## Build
+
+Open this folder in Android Studio, sync Gradle, set the backend URL, then run the `app` configuration. Build APK from **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
+
+## Important limitations in this first native port
+- The backend remains hosted separately and must be reachable over HTTPS.
+- Bookmarks are persisted locally with SharedPreferences. Reading history and offline chapter downloads are not implemented yet.
+- Reader navigation currently renders the chapter images vertically. Previous/next chapter controls, advanced reader settings, and download management remain follow-up work.
+- Real API compatibility should be verified against the deployed backend before release.
